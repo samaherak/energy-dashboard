@@ -5,16 +5,22 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 
 st.set_page_config(page_title="University Energy", layout="wide")
-st.title("Cloud-Based Analysis of Electricity Consumption in University Buildings")
+st.title("University Buildings - Energy Forecasting and Quota System")
 st.caption("Dataset: BDG2 - Panther site (education buildings), 2016-2017")
+
+ALL = "ALL BUILDINGS (whole campus)"
 
 @st.cache_data
 def load():
     return pd.read_csv("panther_data.csv", index_col=0, parse_dates=True)
 
+def get_series(name):
+    df = load()
+    return df.sum(axis=1) if name == ALL else df[name]
+
 @st.cache_data
-def run_model(building):
-    d = pd.DataFrame({"kwh": load()[building]})
+def run_model(name):
+    d = pd.DataFrame({"kwh": get_series(name)})
     d["hour"] = d.index.hour
     d["dayofweek"] = d.index.dayofweek
     d["month"] = d.index.month
@@ -26,20 +32,19 @@ def run_model(building):
     test = d[d.index.year == 2017]
     m = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
     m.fit(train[cols], train["kwh"])
-    pred = m.predict(test[cols])
+    pred = pd.Series(m.predict(test[cols]), index=test.index)
     mae = mean_absolute_error(test["kwh"], pred)
     naive = mean_absolute_error(test["kwh"], test["lag_24h"])
-    week = pd.DataFrame({"Actual": test["kwh"][:168].values,
-                         "Predicted": pred[:168]}, index=test.index[:168])
-    return mae, naive, week
+    return mae, naive, test["kwh"], pred
 
 df = load()
-building = st.sidebar.selectbox("Choose a building", df.columns)
-s = df[building].dropna()
+name = st.sidebar.selectbox("Choose a building", [ALL] + list(df.columns))
+s = get_series(name).dropna()
 
+# ---- 1) Consumption summary ----
 c1, c2, c3 = st.columns(3)
-c1.metric("Average (kWh/hour)", f"{s.mean():.1f}")
-c2.metric("Peak (kWh/hour)", f"{s.max():.1f}")
+c1.metric("Average (kWh/hour)", f"{s.mean():,.1f}")
+c2.metric("Peak (kWh/hour)", f"{s.max():,.1f}")
 c3.metric("Total (kWh)", f"{s.sum():,.0f}")
 
 left, right = st.columns(2)
@@ -50,16 +55,34 @@ with right:
     st.subheader("Average by day (0=Mon ... 6=Sun)")
     st.bar_chart(s.groupby(s.index.dayofweek).mean())
 
+# ---- 2) Prediction ----
 st.subheader("Prediction (Random Forest, trained on 2016, tested on 2017)")
-mae, naive, week = run_model(building)
+mae, naive, actual, pred = run_model(name)
 m1, m2 = st.columns(2)
-m1.metric("Model error (MAE, kWh)", f"{mae:.1f}")
-m2.metric("Copy-yesterday error (MAE, kWh)", f"{naive:.1f}")
-st.line_chart(week)
+m1.metric("Model error (MAE, kWh)", f"{mae:,.1f}")
+m2.metric("Copy-yesterday error (MAE, kWh)", f"{naive:,.1f}")
+if mae > naive:
+    st.info("For this selection the model is not better than copying yesterday. "
+            "Choose the whole campus for the most accurate forecast.")
+st.line_chart(pd.DataFrame({"Actual": actual[:168], "Predicted": pred[:168]}))
 
-st.subheader("Savings scenario (night hours 22:00 - 05:00)")
-pct = st.slider("Reduce night consumption by (%)", 0, 30, 10)
-night = s[s.index.hour.isin([22, 23, 0, 1, 2, 3, 4, 5])].mean()
-saving = night * pct / 100 * 8 * 365
-st.metric("Expected yearly saving (kWh)", f"{saving:,.0f}")
-st.caption("The percentage is a scenario, not a measured value.")
+# ---- 3) Quota ----
+st.subheader("Energy quota")
+st.write("Quota = expected consumption minus the target reduction.")
+pct = st.slider("Target reduction (%)", 0, 30, 10)
+quota = pred * (1 - pct / 100)
+
+q1, q2, q3 = st.columns(3)
+q1.metric("Expected 2017 (kWh)", f"{pred.sum():,.0f}")
+q2.metric("Quota 2017 (kWh)", f"{quota.sum():,.0f}")
+q3.metric("Saving if quota is met (kWh)", f"{pred.sum() - quota.sum():,.0f}")
+
+monthly = pd.DataFrame({"Actual": actual, "Quota": quota}).resample("MS").sum()
+st.write("Monthly: actual vs quota")
+st.line_chart(monthly)
+
+excess = (actual - quota).clip(lower=0)
+st.write("Where to cut: average excess over quota by hour of day (kWh)")
+st.bar_chart(excess.groupby(excess.index.hour).mean())
+st.caption("The reduction percentage is a target you choose, not a measured value. "
+           "The system reports and advises; it does not control the buildings.")
