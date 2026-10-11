@@ -6,7 +6,7 @@ st.title("University Energy: Forecasting and Quota System")
 st.caption(
     "Dataset: BDG2, site Panther (103 buildings with electricity meters and enough data, all types). "
     "Readings before June 2016 were mostly missing and are excluded. "
-    "Model trained on Jun 2016 - May 2017 and tested on Jun - Dec 2017 (about 7 months)."
+    "Model trained on Jun 2016 - May 2017 and tested on Jun - Dec 2017."
 )
 
 ALL = "ALL_BUILDINGS"
@@ -36,7 +36,10 @@ s = series_of(name).dropna()
 c1, c2, c3 = st.columns(3)
 c1.metric("Average (kWh/hour)", f"{s.mean():,.1f}")
 c2.metric("Peak (kWh/hour)", f"{s.max():,.1f}")
-c3.metric("Total (kWh)", f"{s.sum():,.0f}")
+c3.metric("Hours with data", f"{len(s):,}")
+if name == ALL:
+    st.caption("For the whole site, an hour is counted only if all 103 buildings have a reading, "
+               "so some hours are excluded. Use the averages (kWh/hour), not sums.")
 
 left, right = st.columns(2)
 with left:
@@ -65,16 +68,18 @@ st.line_chart(pd.DataFrame({"Actual": actual.iloc[:168], "Predicted": pred.iloc[
 st.subheader("Energy quota")
 st.write("Quota = expected consumption minus the target reduction.")
 pct = st.slider("Target reduction (%)", 0, 30, 10)
-expected = pred.sum()
 quota = pred * (1 - pct / 100)
+hours_total = ((pd.Timestamp("2017-12-31") - pd.Timestamp("2017-06-01")).days + 1) * 24
 
 q1, q2, q3 = st.columns(3)
-q1.metric("Expected (kWh)", f"{expected:,.0f}")
-q2.metric("Quota (kWh)", f"{quota.sum():,.0f}")
-q3.metric("Saving if quota is met (kWh)", f"{expected - quota.sum():,.0f}")
+q1.metric("Expected (kWh/hour)", f"{pred.mean():,.1f}")
+q2.metric("Quota (kWh/hour)", f"{quota.mean():,.1f}")
+q3.metric("Saving per 30-day month (kWh)", f"{(pred.mean() - quota.mean()) * 24 * 30:,.0f}")
+st.caption(f"Based on {len(pred):,} of {hours_total:,} hours in the test period "
+           "(hours with missing readings are excluded).")
 
-st.write("Monthly: actual vs quota")
-st.line_chart(pd.DataFrame({"Actual": actual, "Quota": quota}).resample("MS").sum())
+st.write("Monthly average: actual vs quota (kWh/hour)")
+st.line_chart(pd.DataFrame({"Actual": actual, "Quota": quota}).resample("MS").mean())
 
 # ---- 4) All buildings ----
 st.subheader("All buildings: quota and saving potential")
@@ -89,7 +94,7 @@ tbl["quota_kwh"] = (tbl["expected_kwh"] * (1 - pct / 100)).round()
 tbl["saving_kwh"] = (tbl["expected_kwh"] * pct / 100).round()
 tbl = tbl.sort_values("saving_kwh", ascending=False)
 
-st.write("Top 10 buildings by saving potential (kWh)")
+st.write("Top 10 buildings by saving potential over the test period (kWh)")
 st.bar_chart(tbl.head(10).set_index("building")["saving_kwh"])
 
 show = tbl[["building", "type", "avg_kwh_h", "expected_kwh", "quota_kwh",
